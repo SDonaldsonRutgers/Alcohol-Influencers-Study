@@ -1,0 +1,446 @@
+---
+title: "Alcohol Pilot Analyses"
+output: html_document
+date: "2025-10-13"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Packages}
+library(haven)
+library(MASS)     
+library(dplyr)    
+library(car)    
+library(srvyr)
+library(pscl) 
+```
+```{r Import Data}
+AlcPilot_DATA <- read_sav("AlcPilot_DATA.sav")
+```
+
+#Recode Variables
+```{r Treatment}
+#Treatment condition
+AlcPilot_DATA$treatment_flag <- ifelse(
+  AlcPilot_DATA$Block_4_video_treatment == 1, 1,
+  ifelse(AlcPilot_DATA$Block_4_video_treatment == 2, 0, NA))
+
+AlcPilot_DATA$treatment_group <- factor(
+  AlcPilot_DATA$treatment_flag,
+  levels = c(1, 0),
+  labels = c("Treatment", "Control"))
+
+AlcPilot_DATA$treatment_group <- relevel(AlcPilot_DATA$treatment_group, ref = "Control")
+
+# Ensure treatment_group is a factor (e.g., Control, Image, Video)
+AlcPilot_DATA$treatment_group <- as.factor(AlcPilot_DATA$treatment_group)
+
+```
+```{r Outcomes}
+# Desire_to_drink as an ordered factor
+AlcPilot_DATA$desire_to_drink <- factor(AlcPilot_DATA$desire_to_drink,
+                                        ordered = TRUE,
+                                        levels = c(1, 2, 3, 4, 5))
+
+#Susceptibility to use
+## Recode: drink_if_offered (1 = Definitely not → 0 [non-susceptible]; else → 1 [susceptible])
+AlcPilot_DATA$drink_if_offered_recode <- ifelse(AlcPilot_DATA$drink_if_offered == 1, 0, 1)
+
+## Recode: drink_next_month (1 = Definitely not → 0; else → 1)
+AlcPilot_DATA$drink_next_month_recode <- ifelse(AlcPilot_DATA$drink_next_month == 1, 0, 1)
+
+## Recode: curiosity (1 = Definitely not curious → 0; else → 1)
+AlcPilot_DATA$curiosity_recode <-  ifelse(AlcPilot_DATA$curiosity_about_drinking == 1, 0, 1)
+
+## Composite susceptibility: 0 = non-susceptible to alcohol, 1 = susceptible
+AlcPilot_DATA$susceptibility_recode <- ifelse(
+   AlcPilot_DATA$drink_if_offered_recode == 0 & 
+   AlcPilot_DATA$drink_next_month_recode == 0 & 
+   AlcPilot_DATA$curiosity_recode == 0,
+   0, 1)
+
+# Positive Expectancy
+AlcPilot_DATA$positive_expectancy_score <- rowMeans(AlcPilot_DATA[, 
+  c("expectancy_brave", "expectancy_talkative", "expectancy_calm",
+    "expectancy_peaceful")], na.rm = TRUE)
+
+# Negative Expectancy
+AlcPilot_DATA$negative_expectancy_score <- rowMeans(AlcPilot_DATA[, c(
+   "expectancy_difficulty_thinking", "expectancy_moody", "expectancy_dizzy",    "expectancy_sloppy")], na.rm = TRUE)
+
+AlcPilot_DATA$positive_expectancy_binary <- ifelse(AlcPilot_DATA$positive_expectancy_score >= 3, 1, 0)
+
+AlcPilot_DATA$negative_expectancy_binary <- ifelse(AlcPilot_DATA$negative_expectancy_score >= 3, 1, 0)
+
+```
+```{r Covariates}
+#Gender
+AlcPilot_DATA$gender_recode <- NA
+AlcPilot_DATA$gender_recode[AlcPilot_DATA$gender_identity == 2] <- 0  
+AlcPilot_DATA$gender_recode[AlcPilot_DATA$gender_identity == 1] <- 1  
+AlcPilot_DATA$gender_recode[AlcPilot_DATA$gender_identity %in% c(3, 4, 5, 6)] <- 2  
+
+#Age
+AlcPilot_DATA$age_recode <- ifelse(AlcPilot_DATA$birthyr >= 2004, "Underage", "21+")
+
+#Race
+AlcPilot_DATA$race_recode <- dplyr::case_when(
+  AlcPilot_DATA$race == 1 ~ "White",
+  AlcPilot_DATA$race == 2 ~ "Black",
+  AlcPilot_DATA$race == 3 ~ "Hispanic",
+  AlcPilot_DATA$race %in% c(4, 5, 6, 7, 8) ~ "Other",
+  TRUE ~ NA_character_
+)
+AlcPilot_DATA$race_recode <- factor(AlcPilot_DATA$race_recode)
+AlcPilot_DATA$race_recode <- relevel(AlcPilot_DATA$race_recode, ref = "White")
+
+#Industry-sponsored offline alcohol advertisement
+AlcPilot_DATA$offline_ads_recode <- ifelse(AlcPilot_DATA$offline_alcohol_ads_m_6 == 1, 0, 1)
+
+#Alc-related content on social media
+smm_items <- paste0("alcohol_social_media_marketing_m_", 1:10)
+
+AlcPilot_DATA$smm_exposure_recode <- ifelse(
+  rowSums(AlcPilot_DATA[, smm_items] == 1, 
+          na.rm = TRUE) > 0,1,0)
+
+#Social media use
+AlcPilot_DATA$social_media_use_recode <- ifelse(
+  rowSums(AlcPilot_DATA[, paste0("social_media_sites_m_", 1:11)] == 1, na.rm = TRUE) > 0, 1, 0)
+
+#Frequency of social media use
+AlcPilot_DATA$social_media_daily_user_recode <- ifelse(
+  apply(AlcPilot_DATA[, paste0("social_media_freq_", 1:11)], 1, function(x) any(x == 5, na.rm = TRUE)),
+  1, 0
+)
+
+```
+```{r Influencer credibility score}
+AlcPilot_DATA$influencer_credibility_score
+
+# Get all 6 traits
+traits <- c("honesty", "trust", "informed", "smart", "attractive", "popularity")
+
+# Build full list of original variable names
+treatment_items <- as.vector(sapply(1:20, function(i) {
+  paste0("vid", i, "_", traits, "_treatment")
+}))
+
+control_items <- as.vector(sapply(1:20, function(i) {
+  paste0("vid", i, "_", traits, "_control")
+}))
+
+AlcPilot_DATA[treatment_items] <- lapply(AlcPilot_DATA[treatment_items], function(x) ifelse(x == 999, NA, x))
+AlcPilot_DATA[control_items]   <- lapply(AlcPilot_DATA[control_items], function(x) ifelse(x == 999, NA, x))
+
+# Initialize
+AlcPilot_DATA$influencer_credibility_score <- NA
+
+# Assign score for treatment group
+AlcPilot_DATA$influencer_credibility_score[AlcPilot_DATA$treatment_group == "Treatment"] <-
+  rowMeans(AlcPilot_DATA[AlcPilot_DATA$treatment_group == "Treatment", treatment_items], na.rm = TRUE)
+
+# Assign score for control group
+AlcPilot_DATA$influencer_credibility_score[AlcPilot_DATA$treatment_group == "Control"] <-
+  rowMeans(AlcPilot_DATA[AlcPilot_DATA$treatment_group == "Control", control_items], na.rm = TRUE)
+
+#Binary Score
+AlcPilot_DATA$influencer_credibility_score_binary <- ifelse(AlcPilot_DATA$influencer_credibility_score >= 4, 1, 0)
+
+#Cronbach's Alpha 
+# Define the six traits used for credibility
+traits <- c("honesty", "trust", "informed", "smart", "attractive", "popularity")
+
+# Select only the credibility items for the treatment group
+treatment_items <- as.vector(sapply(1:20, function(i) {
+  paste0("vid", i, "_", traits, "_treatment")
+}))
+
+# Select only the credibility items for the control group
+control_items <- as.vector(sapply(1:20, function(i) {
+  paste0("vid", i, "_", traits, "_control")
+}))
+
+# Subset the data
+treatment_data <- AlcPilot_DATA[treatment_items]
+control_data   <- AlcPilot_DATA[control_items]
+
+# Compute Cronbach's alpha for each group
+alpha_treatment <- psych::alpha(treatment_data, check.keys = TRUE)
+alpha_control   <- psych::alpha(control_data, check.keys = TRUE)
+
+# View results
+alpha_treatment$total$raw_alpha
+alpha_control$total$raw_alpha
+```
+
+#Demographics and Covariates
+```{r Demographics}
+# --- Function to compute weighted + unweighted summary ---
+get_weighted_table <- function(data, var, weight_var = "weight") {
+  total_weight <- sum(data[[weight_var]], na.rm = TRUE)
+  
+  out <- data %>%
+    filter(!is.na(.data[[var]])) %>% 
+    group_by(Category = as.character(.data[[var]])) %>%   # ensure consistent type
+    summarise(
+      Unweighted_n = n(),
+      Unweighted_pct = round(100 * n() / nrow(data), 1),
+      Weighted_n = round(sum(.data[[weight_var]], na.rm = TRUE)),
+      Weighted_pct = round(100 * sum(.data[[weight_var]], na.rm = TRUE) / total_weight, 1),
+      .groups = "drop"
+    ) %>%
+    mutate(Variable = var) %>%
+    select(Variable, Category, Unweighted_n, Unweighted_pct, Weighted_n, Weighted_pct)
+  
+  return(out)
+}
+
+# --- Variables to summarize (now includes offline ads) ---
+vars <- c("gender_identity",
+          "race",
+          "age_recode",
+          "social_media_daily_user_recode",
+          "smm_exposure_recode",
+          "offline_ads_recode",          
+          "lifetime_alcohol",
+          "past30_alcohol",
+          "past30_binge",
+          "influencer_credibility_score_binary")
+
+# --- Combine all summaries ---
+weighted_tables <- lapply(vars, function(v) get_weighted_table(AlcPilot_DATA, v))
+table1_all <- bind_rows(weighted_tables)
+
+# --- View or export ---
+View(table1_all)
+write.csv(table1_all, "Table1_Final_Clean.csv", row.names = FALSE)
+
+```
+
+#Regression Models
+```{r Desire to drink}
+# Regression Model
+model1 <- polr(
+  desire_to_drink ~ treatment_group + gender_recode + age_recode + race_recode +
+    offline_ads_recode + smm_exposure_recode +
+    social_media_daily_user_recode + lifetime_alcohol,
+  data = AlcPilot_DATA,
+  Hess = TRUE,
+  weights = weight
+)
+
+# Summary and p-values
+ctable1 <- coef(summary(model1))
+p_vals1 <- pnorm(abs(ctable1[, "t value"]), lower.tail = FALSE) * 2
+ctable1 <- cbind(ctable1, "p value" = round(p_vals1, 4))
+
+# Odds Ratios and 95% Confidence Intervals
+ORs1 <- exp(coef(model1))
+CIs1 <- exp(confint(model1))  # uses profile likelihood by default
+results1 <- data.frame(
+  OR = round(ORs1, 2),
+  CI_lower = round(CIs1[, 1], 2),
+  CI_upper = round(CIs1[, 2], 2)
+)
+
+# Combine OR + CI into single string for easier reporting
+results1$OR_95CI <- paste0(results1$OR, " [", results1$CI_lower, ", ", results1$CI_upper, "]")
+
+# Print table
+print(results1)
+
+```
+```{r Desire to drink X influencer credibility}
+# Regression Model
+model2 <- polr(
+  desire_to_drink ~ treatment_group * influencer_credibility_score_binary +
+    gender_recode + age_recode + race_recode +
+    offline_ads_recode + smm_exposure_recode +
+    social_media_daily_user_recode + lifetime_alcohol,
+  data = AlcPilot_DATA,
+  Hess = TRUE,
+  weights = weight
+)
+
+# Summary and p-values
+ctable2 <- coef(summary(model2))
+p_vals2 <- pnorm(abs(ctable2[, "t value"]), lower.tail = FALSE) * 2
+ctable2 <- cbind(ctable2, "p value" = round(p_vals2, 4))
+
+# Odds Ratios and 95% Confidence Intervals
+ORs2 <- exp(coef(model2))
+CIs2 <- exp(confint(model2))  # profile likelihood-based CIs
+results2 <- data.frame(
+  OR = round(ORs2, 2),
+  CI_lower = round(CIs2[, 1], 2),
+  CI_upper = round(CIs2[, 2], 2)
+)
+
+# Combine OR + CI into a single formatted column
+results2$OR_95CI <- paste0(results2$OR, " [", results2$CI_lower, ", ", results2$CI_upper, "]")
+
+# Print final results
+print(results2)
+```
+```{r Desire to drink X past 30 days}
+# Regression Model
+model3 <- polr(
+  desire_to_drink ~ treatment_group * past30_alcohol +
+    gender_recode + age_recode + race_recode +
+    offline_ads_recode + smm_exposure_recode +
+    social_media_daily_user_recode,
+  data = AlcPilot_DATA,
+  Hess = TRUE,
+  weights = weight
+)
+
+# Summary and p-values
+ctable3 <- coef(summary(model3))
+p_vals3 <- pnorm(abs(ctable3[, "t value"]), lower.tail = FALSE) * 2
+ctable3 <- cbind(ctable3, "p value" = round(p_vals3, 4))
+
+# Odds Ratios and 95% Confidence Intervals
+ORs3 <- exp(coef(model3))
+CIs3 <- exp(confint(model3))  # profile likelihood-based CIs
+results3 <- data.frame(
+  OR = round(ORs3, 2),
+  CI_lower = round(CIs3[, 1], 2),
+  CI_upper = round(CIs3[, 2], 2)
+)
+
+# Combine OR + CI into a single formatted column
+results3$OR_95CI <- paste0(results3$OR, " [", results3$CI_lower, ", ", results3$CI_upper, "]")
+
+# Print final results
+print(results3)
+
+
+```
+```{r Desire to drink X binge drinking}
+# Regression Model
+model4 <- polr(
+  desire_to_drink ~ treatment_group * past30_binge +
+    gender_recode + age_recode + race_recode +
+    offline_ads_recode + smm_exposure_recode +
+    social_media_daily_user_recode,
+  data = AlcPilot_DATA,
+  Hess = TRUE,
+  weights = weight
+)
+
+# Summary and p-values
+ctable4 <- coef(summary(model4))
+p_vals4 <- pnorm(abs(ctable4[, "t value"]), lower.tail = FALSE) * 2
+ctable4 <- cbind(ctable4, "p value" = round(p_vals4, 4))
+
+# Odds Ratios and 95% Confidence Intervals
+ORs4 <- exp(coef(model4))
+CIs4 <- exp(confint(model4))  # profile likelihood-based CIs
+results4 <- data.frame(
+  OR = round(ORs4, 2),
+  CI_lower = round(CIs4[, 1], 2),
+  CI_upper = round(CIs4[, 2], 2)
+)
+
+# Combine OR + CI into a single formatted column
+results4$OR_95CI <- paste0(results4$OR, " [", results4$CI_lower, ", ", results4$CI_upper, "]")
+
+# Print final results
+print(results4)
+```
+
+#Null Models
+```{r Susceptibility to use}
+# Logistic regression for susceptibility composite
+model_susc_composite <- glm(susceptibility_recode ~ treatment_group +
+                            gender_recode + age_recode + race_recode +
+                            offline_ads_recode + smm_exposure_recode +
+                            social_media_daily_user_recode,
+                            data = AlcPilot_DATA, family = binomial,weights = weight)
+
+# Model summary
+summary(model_susc_composite)
+
+# Odds Ratios and 95% CI
+exp(cbind(OR = coef(model_susc_composite), confint(model_susc_composite)))
+
+#SUBSCALES
+# Drink if offered
+model_offer <- glm(drink_if_offered_recode ~ treatment_group +
+                   gender_recode + age_recode +race_recode +
+                   offline_ads_recode + smm_exposure_recode
+                   +social_media_daily_user_recode,data = AlcPilot_DATA,
+                   family = binomial,weights = weight)
+
+# ORs
+exp(cbind(OR = coef(model_offer), confint(model_offer)))
+
+# Drink next month
+model_next_month <- glm(drink_next_month_recode ~ treatment_group +
+                        gender_recode + age_recode + race_recode +
+                        offline_ads_recode + smm_exposure_recode +
+                        social_media_daily_user_recode,
+                        data = AlcPilot_DATA, family = binomial,weights = weight)
+
+# OR
+exp(cbind(OR = coef(model_next_month), confint(model_next_month)))
+
+# Curiosity
+model_curiosity <- glm(curiosity_recode ~ treatment_group + 
+                       gender_recode + age_recode +
+                       race_recode + offline_ads_recode +
+                       smm_exposure_recode +
+                       social_media_daily_user_recode,
+                       data = AlcPilot_DATA, family = binomial,weights = weight)
+
+# OR
+exp(cbind(OR = coef(model_curiosity), confint(model_curiosity)))
+```
+```{r Expectancies}
+# Positive expectancy (continuous)
+model_pos_cont <- lm(positive_expectancy_score ~ treatment_group +
+                     gender_recode + age_recode +
+                     race_recode + offline_ads_recode + 
+                     smm_exposure_recode +
+                     social_media_daily_user_recode,
+                     data = AlcPilot_DATA,
+                     weights = weight)
+summary(model_pos_cont)
+
+# Negative expectancy (continuous)
+model_neg_cont <- lm(negative_expectancy_score ~ treatment_group +
+                     gender_recode + age_recode +
+                     race_recode + offline_ads_recode + 
+                     smm_exposure_recode + social_media_daily_user_recode,
+                     data = AlcPilot_DATA,
+                     weights = weight)
+summary(model_neg_cont )
+
+# Positive expectancy (high vs. low)
+model_pos_bin <- glm(positive_expectancy_binary ~ treatment_group +
+                     gender_recode + age_recode +
+                     race_recode + offline_ads_recode + smm_exposure_recode
+                     + social_media_daily_user_recode,
+                     data = AlcPilot_DATA, 
+                     family = binomial,
+                     weights = weight)
+
+# Negative expectancy (high vs. low)
+model_neg_bin <- glm(negative_expectancy_binary ~ treatment_group +
+                     gender_recode + age_recode +
+                     race_recode + offline_ads_recode + smm_exposure_recode
+                     + social_media_daily_user_recode,
+                     data = AlcPilot_DATA, 
+                     family = binomial,
+                     weights = weight)
+
+# Odds Ratios and 95% CIs
+exp(cbind(OR = coef(model_pos_bin), confint(model_pos_bin)))
+exp(cbind(OR = coef(model_neg_bin), confint(model_neg_bin)))
+
+```
+
+
+
+
